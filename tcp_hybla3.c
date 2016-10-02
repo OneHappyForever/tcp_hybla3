@@ -15,11 +15,10 @@
 
 #include <linux/module.h>
 #include <net/tcp.h>
-#include <asm/i387.h>
 
 /* Tcp evil structure. */
 struct evil {
-	u8    evil_en;
+	u8    hybla_en;
 	u32   snd_cwnd_cents; /* Keeps increment values when it is <1, <<7 */
 	u32   rho;	      /* Rho parameter, integer part  */
 	u32   rho2;	      /* Rho * Rho, integer part */
@@ -30,15 +29,15 @@ struct evil {
 
 /* evil reference round trip time (default= 1/200 sec = 5 ms),
    expressed in jiffies */
-static int rtt0 = 5;
+static int rtt0 = 1;
 module_param(rtt0, int, 0644);
 MODULE_PARM_DESC(rtt0, "reference rout trip time (ms)");
 
 
 /* This is called to refresh values for evil parameters */
-static inline void evil_recalc_param (struct sock *sk)
+static inline void hybla_recalc_param (struct sock *sk)
 {
-	struct evil *ca = inet_csk_ca(sk);
+	struct hybla *ca = inet_csk_ca(sk);
 
 	ca->rho_3ls = max_t(u32, tcp_sk(sk)->srtt / msecs_to_jiffies(rtt0), 8);
 	ca->rho = ca->rho_3ls >> 3;
@@ -46,35 +45,35 @@ static inline void evil_recalc_param (struct sock *sk)
 	ca->rho2 = ca->rho2_7ls >>7;
 }
 
-static void evil_init(struct sock *sk)
+static void hybla_init(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	struct evil *ca = inet_csk_ca(sk);
+	struct hybla *ca = inet_csk_ca(sk);
 
 	ca->rho = 0;
 	ca->rho2 = 0;
 	ca->rho_3ls = 0;
 	ca->rho2_7ls = 0;
 	ca->snd_cwnd_cents = 0;
-	ca->evil_en = 1;
+	ca->hybla_en = true;
 	tp->snd_cwnd = 2;
 	tp->snd_cwnd_clamp = 65535;
 
 	/* 1st Rho measurement based on initial srtt */
-	evil_recalc_param(sk);
+	hybla_recalc_param(sk);
 
 	/* set minimum rtt as this is the 1st ever seen */
 	ca->minrtt = tp->srtt;
 	tp->snd_cwnd = ca->rho;
 }
 
-static void evil_state(struct sock *sk, u8 ca_state)
+static void hybla_state(struct sock *sk, u8 ca_state)
 {
-	struct evil *ca = inet_csk_ca(sk);
-	ca->evil_en = (ca_state == TCP_CA_Open);
+	struct hybla *ca = inet_csk_ca(sk);
+	ca->hybla_en = (ca_state == TCP_CA_Open);
 }
 
-static inline u32 evil_fraction(u32 odds)
+static inline u32 hybla_fraction(u32 odds)
 {
 	static const u32 fractions[] = {
 		128, 139, 152, 165, 181, 197, 215, 234,
@@ -89,7 +88,7 @@ static inline u32 evil_fraction(u32 odds)
  *     o Give cwnd a new value based on the model proposed
  *     o remember increments <1
  */
-static void evil_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
+static void hybla_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct evil *ca = inet_csk_ca(sk);
@@ -102,16 +101,16 @@ static void evil_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 		ca->minrtt = tp->srtt;
 	}
 
-	if (!tcp_is_cwnd_limited(sk, in_flight))
+	if (!tcp_is_cwnd_limited(sk))
 		return;
 
-	if (!ca->evil_en) {
-		tcp_reno_cong_avoid(sk, ack, in_flight);
+	if (!ca->hybla_en) {
+		tcp_reno_cong_avoid(sk, ack, acked);
 		return;
 	}
 
 	if (ca->rho == 0)
-		evil_recalc_param(sk);
+		hybla_recalc_param(sk);
 
 	rho_fractions = ca->rho_3ls - (ca->rho << 3);
 
@@ -131,7 +130,7 @@ static void evil_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 		 */
 		is_slowstart = 1;
 		increment = ((1 << min(ca->rho, 16U)) *
-			evil_fraction(rho_fractions)) - 128;
+			hybla_fraction(rho_fractions)) - 128;
 	} else {
 		/*
 		 * congestion avoidance
@@ -167,7 +166,7 @@ static void evil_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 }
 
 /* Slow start threshold is 90% of the congestion window (min 2) */
-u32 evil_ssthresh(struct sock *sk)
+u32 hybla_ssthresh(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	u32 ret = tp->snd_cwnd;
@@ -178,25 +177,25 @@ u32 evil_ssthresh(struct sock *sk)
 EXPORT_SYMBOL_GPL(evil_ssthresh);
 
 static struct tcp_congestion_ops tcp_evil __read_mostly = {
-	.init		= evil_init,
-	.ssthresh	= evil_ssthresh,
+	.init		= hybla_init,
+	.ssthresh	= hybla_ssthresh,
 	.min_cwnd	= tcp_reno_min_cwnd,
-	.cong_avoid	= evil_cong_avoid,
-	.set_state	= evil_state,
+	.cong_avoid	= hybla_cong_avoid,
+	.set_state	= hybla_state,
 
 	.owner		= THIS_MODULE,
 	.name		= "evil"
 };
 
-static int __init evil_register(void)
+static int __init hybla_register(void)
 {
 	BUILD_BUG_ON(sizeof(struct evil) > ICSK_CA_PRIV_SIZE);
-	return tcp_register_congestion_control(&tcp_evil);
+	return tcp_register_congestion_control(&tcp_hybla);
 }
 
 static void __exit evil_unregister(void)
 {
-	tcp_unregister_congestion_control(&tcp_evil);
+	tcp_unregister_congestion_control(&tcp_hybla);
 }
 
 module_init(evil_register);
