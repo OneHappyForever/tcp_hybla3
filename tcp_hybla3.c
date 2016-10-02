@@ -15,6 +15,7 @@
 
 #include <linux/module.h>
 #include <net/tcp.h>
+#include <asm/i387.h>
 
 /* Tcp evil structure. */
 struct evil {
